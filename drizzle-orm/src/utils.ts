@@ -6,7 +6,7 @@ import type { SelectedFieldsOrdered } from './operations.ts';
 import type { TableLike } from './query-builders/select.types.ts';
 import { Param, SQL, View } from './sql/sql.ts';
 import type { DriverValueDecoder } from './sql/sql.ts';
-import { Subquery, SubqueryConfig } from './subquery.ts';
+import { Subquery } from './subquery.ts';
 import { getTableName, Table } from './table.ts';
 import { ViewBaseConfig } from './view-common.ts';
 
@@ -181,6 +181,8 @@ export type ValueOrArray<T> = T | T[];
 export function applyMixins(baseClass: any, extendedClasses: any[]) {
 	for (const extendedClass of extendedClasses) {
 		for (const name of Object.getOwnPropertyNames(extendedClass.prototype)) {
+			if (name === 'constructor') continue;
+
 			Object.defineProperty(
 				baseClass.prototype,
 				name,
@@ -207,7 +209,7 @@ export function getTableColumns<T extends Table>(table: T): T['_']['columns'] {
 /** @internal */
 export function getTableLikeName(table: TableLike): string | undefined {
 	return is(table, Subquery)
-		? table[SubqueryConfig].alias
+		? table._.alias
 		: is(table, View)
 		? table[ViewBaseConfig].name
 		: is(table, SQL)
