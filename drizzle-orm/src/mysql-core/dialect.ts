@@ -196,7 +196,7 @@ export class MySqlDialect {
 						chunk.push(field);
 					}
 				} else if (is(field, Subquery)) {
-					const entries = Object.entries(field[SubqueryConfig].selection) as [string, SQL.Aliased | Column | SQL][];
+					const entries = Object.entries(field._.selectedFields) as [string, SQL.Aliased | Column | SQL][];
 
 					if (entries.length === 1) {
 						const entry = entries[0]![1];
@@ -208,7 +208,7 @@ export class MySqlDialect {
 							: entry.sql.decoder;
 
 						if (fieldDecoder) {
-							field[SubqueryConfig].sql.decoder = fieldDecoder;
+							field._.sql.decoder = fieldDecoder;
 						}
 					}
 					chunk.push(field);

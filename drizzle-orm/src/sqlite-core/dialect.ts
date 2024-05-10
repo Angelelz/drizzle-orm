@@ -163,7 +163,7 @@ export abstract class SQLiteDialect {
 						chunk.push(sql`${sql.identifier(tableName)}.${sql.identifier(columnName)}`);
 					}
 				} else if (is(field, Subquery)) {
-					const entries = Object.entries(field[SubqueryConfig].selection) as [string, SQL.Aliased | Column | SQL][];
+					const entries = Object.entries(field._.selectedFields) as [string, SQL.Aliased | Column | SQL][];
 
 					if (entries.length === 1) {
 						const entry = entries[0]![1];
@@ -175,7 +175,7 @@ export abstract class SQLiteDialect {
 							: entry.sql.decoder;
 
 						if (fieldDecoder) {
-							field[SubqueryConfig].sql.decoder = fieldDecoder;
+							field._.sql.decoder = fieldDecoder;
 						}
 					}
 					chunk.push(field);
