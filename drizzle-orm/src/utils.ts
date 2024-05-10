@@ -6,7 +6,7 @@ import type { SelectedFieldsOrdered } from './operations.ts';
 import type { TableLike } from './query-builders/select.types.ts';
 import { Param, SQL, View } from './sql/sql.ts';
 import type { DriverValueDecoder } from './sql/sql.ts';
-import { Subquery, SubqueryConfig } from './subquery.ts';
+import { Subquery } from './subquery.ts';
 import { getTableName, Table } from './table.ts';
 import { ViewBaseConfig } from './view-common.ts';
 
@@ -19,45 +19,43 @@ export function mapResultRow<TResult>(
 	// Key -> nested object key, value -> table name if all fields in the nested object are from the same table, false otherwise
 	const nullifyMap: Record<string, string | false> = {};
 
-	const result = columns.reduce<Record<string, any>>(
-		(result, { path, field }, columnIndex) => {
-			let decoder: DriverValueDecoder<unknown, unknown>;
-			if (is(field, Column)) {
-				decoder = field;
-			} else if (is(field, SQL)) {
-				decoder = field.decoder;
-			} else if (is(field, SQL.Aliased)) {
-				decoder = field.sql.decoder;
+	const result = columns.reduce<Record<string, any>>((result, { path, field }, columnIndex) => {
+		let decoder: DriverValueDecoder<unknown, unknown>;
+		if (is(field, Column)) {
+			decoder = field;
+		} else if (is(field, SQL)) {
+			decoder = field.decoder;
+		} else if (is(field, SQL.Aliased)) {
+			decoder = field.sql.decoder;
+		} else {
+			decoder = field._.sql.decoder;
+		}
+		let node = result;
+		for (const [pathChunkIndex, pathChunk] of path.entries()) {
+			if (pathChunkIndex < path.length - 1) {
+				if (!(pathChunk in node)) {
+					node[pathChunk] = {};
+				}
+				node = node[pathChunk];
 			} else {
-				decoder = field[SubqueryConfig].sql.decoder;
-			}
-			let node = result;
-			for (const [pathChunkIndex, pathChunk] of path.entries()) {
-				if (pathChunkIndex < path.length - 1) {
-					if (!(pathChunk in node)) {
-						node[pathChunk] = {};
-					}
-					node = node[pathChunk];
-				} else {
-					const rawValue = row[columnIndex]!;
-					const value = node[pathChunk] = rawValue === null ? null : decoder.mapFromDriverValue(rawValue);
+				const rawValue = row[columnIndex]!;
+				const value = (node[pathChunk] = rawValue === null ? null : decoder.mapFromDriverValue(rawValue));
 
-					if (joinsNotNullableMap && is(field, Column) && path.length === 2) {
-						const objectName = path[0]!;
-						if (!(objectName in nullifyMap)) {
-							nullifyMap[objectName] = value === null ? getTableName(field.table) : false;
-						} else if (
-							typeof nullifyMap[objectName] === 'string' && nullifyMap[objectName] !== getTableName(field.table)
-						) {
-							nullifyMap[objectName] = false;
-						}
+				if (joinsNotNullableMap && is(field, Column) && path.length === 2) {
+					const objectName = path[0]!;
+					if (!(objectName in nullifyMap)) {
+						nullifyMap[objectName] = value === null ? getTableName(field.table) : false;
+					} else if (
+						typeof nullifyMap[objectName] === 'string'
+						&& nullifyMap[objectName] !== getTableName(field.table)
+					) {
+						nullifyMap[objectName] = false;
 					}
 				}
 			}
-			return result;
-		},
-		{},
-	);
+		}
+		return result;
+	}, {});
 
 	// Nullify all nested objects from nullifyMap that are nullable
 	if (joinsNotNullableMap && Object.keys(nullifyMap).length > 0) {
@@ -76,21 +74,24 @@ export function orderSelectedFields<TColumn extends AnyColumn>(
 	fields: Record<string, unknown>,
 	pathPrefix?: string[],
 ): SelectedFieldsOrdered<TColumn> {
-	return Object.entries(fields).reduce<SelectedFieldsOrdered<AnyColumn>>((result, [name, field]) => {
-		if (typeof name !== 'string') {
-			return result;
-		}
+	return Object.entries(fields).reduce<SelectedFieldsOrdered<AnyColumn>>(
+		(result, [name, field]) => {
+			if (typeof name !== 'string') {
+				return result;
+			}
 
-		const newPath = pathPrefix ? [...pathPrefix, name] : [name];
-		if (is(field, Column) || is(field, SQL) || is(field, SQL.Aliased) || is(field, Subquery)) {
-			result.push({ path: newPath, field });
-		} else if (is(field, Table)) {
-			result.push(...orderSelectedFields(field[Table.Symbol.Columns], newPath));
-		} else {
-			result.push(...orderSelectedFields(field as Record<string, unknown>, newPath));
-		}
-		return result;
-	}, []) as SelectedFieldsOrdered<TColumn>;
+			const newPath = pathPrefix ? [...pathPrefix, name] : [name];
+			if (is(field, Column) || is(field, SQL) || is(field, SQL.Aliased) || is(field, Subquery)) {
+				result.push({ path: newPath, field });
+			} else if (is(field, Table)) {
+				result.push(...orderSelectedFields(field[Table.Symbol.Columns], newPath));
+			} else {
+				result.push(...orderSelectedFields(field as Record<string, unknown>, newPath));
+			}
+			return result;
+		},
+		[],
+	) as SelectedFieldsOrdered<TColumn>;
 }
 
 export function haveSameKeys(left: Record<string, unknown>, right: Record<string, unknown>) {
@@ -135,10 +136,9 @@ export type UpdateSet = Record<string, SQL | Param | null | undefined>;
 export type OneOrMany<T> = T | T[];
 
 export type Update<T, TUpdate> = Simplify<
-	& {
+	{
 		[K in Exclude<keyof T, keyof TUpdate>]: T[K];
-	}
-	& TUpdate
+	} & TUpdate
 >;
 
 export type Simplify<T> =
@@ -152,16 +152,21 @@ export type Not<T extends boolean> = T extends true ? false : true;
 
 export type IsNever<T> = [T] extends [never] ? true : false;
 
-export type IsUnion<T, U extends T = T> = (T extends any ? (U extends T ? false : true) : never) extends false ? false
+export type IsUnion<T, U extends T = T> = (
+	T extends any ? (U extends T ? false : true) : never
+) extends false ? false
 	: true;
 
 export type SingleKeyObject<T, TError extends string, K = keyof T> = IsNever<K> extends true ? never
 	: IsUnion<K> extends true ? DrizzleTypeError<TError>
 	: T;
 
-export type FromSingleKeyObject<T, Result, TError extends string, K = keyof T> = IsNever<K> extends true ? never
-	: IsUnion<K> extends true ? DrizzleTypeError<TError>
-	: Result;
+export type FromSingleKeyObject<
+	T,
+	Result,
+	TError extends string,
+	K = keyof T,
+> = IsNever<K> extends true ? never : IsUnion<K> extends true ? DrizzleTypeError<TError> : Result;
 
 export type SimplifyMappedType<T> = [T] extends [unknown] ? T : never;
 
@@ -169,7 +174,8 @@ export type ShallowRecord<K extends keyof any, T> = SimplifyMappedType<{ [P in K
 
 export type Assume<T, U> = T extends U ? T : U;
 
-export type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? true : false;
+export type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true
+	: false;
 
 export interface DrizzleTypeError<T extends string> {
 	$drizzleTypeError: T;
@@ -181,6 +187,8 @@ export type ValueOrArray<T> = T | T[];
 export function applyMixins(baseClass: any, extendedClasses: any[]) {
 	for (const extendedClass of extendedClasses) {
 		for (const name of Object.getOwnPropertyNames(extendedClass.prototype)) {
+			if (name === 'constructor') continue;
+
 			Object.defineProperty(
 				baseClass.prototype,
 				name,
@@ -207,7 +215,7 @@ export function getTableColumns<T extends Table>(table: T): T['_']['columns'] {
 /** @internal */
 export function getTableLikeName(table: TableLike): string | undefined {
 	return is(table, Subquery)
-		? table[SubqueryConfig].alias
+		? table._.alias
 		: is(table, View)
 		? table[ViewBaseConfig].name
 		: is(table, SQL)
@@ -230,7 +238,10 @@ export interface DrizzleConfig<TSchema extends Record<string, unknown> = Record<
 export type ValidateShape<T, ValidShape, TResult = T> = T extends ValidShape
 	? Exclude<keyof T, keyof ValidShape> extends never ? TResult
 	: DrizzleTypeError<
-		`Invalid key(s): ${Exclude<(keyof T) & (string | number | bigint | boolean | null | undefined), keyof ValidShape>}`
+		`Invalid key(s): ${Exclude<
+			keyof T & (string | number | bigint | boolean | null | undefined),
+			keyof ValidShape
+		>}`
 	>
 	: never;
 
@@ -238,4 +249,4 @@ export type KnownKeysOnly<T, U> = {
 	[K in keyof T]: K extends keyof U ? T[K] : never;
 };
 
-export type IsAny<T> = 0 extends (1 & T) ? true : false;
+export type IsAny<T> = 0 extends 1 & T ? true : false;

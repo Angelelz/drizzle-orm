@@ -1,4 +1,4 @@
-import type { Connection, ExecutedQuery, Transaction } from '@planetscale/database';
+import type { Client, Connection, ExecutedQuery, Transaction } from '@planetscale/database';
 import { entityKind } from '~/entity.ts';
 import type { Logger } from '~/logger.ts';
 import { NoopLogger } from '~/logger.ts';
@@ -16,8 +16,6 @@ import type { RelationalSchemaConfig, TablesRelationalConfig } from '~/relations
 import { fillPlaceholders, type Query, type SQL, sql } from '~/sql/sql.ts';
 import { type Assume, mapResultRow } from '~/utils.ts';
 
-export type PlanetScaleConnection = Connection;
-
 export class PlanetScalePreparedQuery<T extends PreparedQueryConfig> extends PreparedQuery<T> {
 	static readonly [entityKind]: string = 'PlanetScalePreparedQuery';
 
@@ -25,7 +23,7 @@ export class PlanetScalePreparedQuery<T extends PreparedQueryConfig> extends Pre
 	private query = { as: 'array' } as const;
 
 	constructor(
-		private client: PlanetScaleConnection | Transaction,
+		private client: Client | Transaction | Connection,
 		private queryString: string,
 		private params: unknown[],
 		private logger: Logger,
@@ -70,10 +68,10 @@ export class PlanetscaleSession<
 	static readonly [entityKind]: string = 'PlanetscaleSession';
 
 	private logger: Logger;
-	private client: PlanetScaleConnection | Transaction;
+	private client: Client | Transaction | Connection;
 
 	constructor(
-		private baseClient: PlanetScaleConnection,
+		private baseClient: Client | Connection,
 		dialect: MySqlDialect,
 		tx: Transaction | undefined,
 		private schema: RelationalSchemaConfig<TSchema> | undefined,
@@ -116,7 +114,11 @@ export class PlanetscaleSession<
 	): Promise<T> {
 		return this.baseClient.transaction((pstx) => {
 			const session = new PlanetscaleSession(this.baseClient, this.dialect, pstx, this.schema, this.options);
-			const tx = new PlanetScaleTransaction(this.dialect, session as MySqlSession<any, any, any, any>, this.schema);
+			const tx = new PlanetScaleTransaction<TFullSchema, TSchema>(
+				this.dialect,
+				session as MySqlSession<any, any, any, any>,
+				this.schema,
+			);
 			return transaction(tx);
 		});
 	}
@@ -141,7 +143,12 @@ export class PlanetScaleTransaction<
 		transaction: (tx: PlanetScaleTransaction<TFullSchema, TSchema>) => Promise<T>,
 	): Promise<T> {
 		const savepointName = `sp${this.nestedIndex + 1}`;
-		const tx = new PlanetScaleTransaction(this.dialect, this.session, this.schema, this.nestedIndex + 1);
+		const tx = new PlanetScaleTransaction<TFullSchema, TSchema>(
+			this.dialect,
+			this.session,
+			this.schema,
+			this.nestedIndex + 1,
+		);
 		await tx.execute(sql.raw(`savepoint ${savepointName}`));
 		try {
 			const result = await transaction(tx);

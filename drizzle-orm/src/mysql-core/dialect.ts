@@ -16,7 +16,7 @@ import {
 } from '~/relations.ts';
 import { Param, SQL, sql, View } from '~/sql/sql.ts';
 import type { QueryWithTypings, SQLChunk } from '~/sql/sql.ts';
-import { Subquery, SubqueryConfig } from '~/subquery.ts';
+import { Subquery } from '~/subquery.ts';
 import { getTableName, Table } from '~/table.ts';
 import { orderSelectedFields, type UpdateSet } from '~/utils.ts';
 import { and, DrizzleError, eq, type Name, ViewBaseConfig } from '../index.ts';
@@ -32,7 +32,11 @@ import { MySqlViewBase } from './view-base.ts';
 export class MySqlDialect {
 	static readonly [entityKind]: string = 'MySqlDialect';
 
-	async migrate(migrations: MigrationMeta[], session: MySqlSession, config: MigrationConfig): Promise<void> {
+	async migrate(
+		migrations: MigrationMeta[],
+		session: MySqlSession,
+		config: Omit<MigrationConfig, 'migrationsSchema'>,
+	): Promise<void> {
 		const migrationsTable = config.migrationsTable ?? '__drizzle_migrations';
 		const migrationTableCreate = sql`
 			create table if not exists ${sql.identifier(migrationsTable)} (
@@ -80,34 +84,56 @@ export class MySqlDialect {
 		return `'${str.replace(/'/g, "''")}'`;
 	}
 
-	buildDeleteQuery({ table, where, returning }: MySqlDeleteConfig): SQL {
+	private buildWithCTE(queries: Subquery[] | undefined): SQL | undefined {
+		if (!queries?.length) return undefined;
+
+		const withSqlChunks = [sql`with `];
+		for (const [i, w] of queries.entries()) {
+			withSqlChunks.push(sql`${sql.identifier(w._.alias)} as (${w._.sql})`);
+			if (i < queries.length - 1) {
+				withSqlChunks.push(sql`, `);
+			}
+		}
+		withSqlChunks.push(sql` `);
+		return sql.join(withSqlChunks);
+	}
+
+	buildDeleteQuery({ table, where, returning, withList }: MySqlDeleteConfig): SQL {
+		const withSql = this.buildWithCTE(withList);
+
 		const returningSql = returning
 			? sql` returning ${this.buildSelection(returning, { isSingleTable: true })}`
 			: undefined;
 
 		const whereSql = where ? sql` where ${where}` : undefined;
 
-		return sql`delete from ${table}${whereSql}${returningSql}`;
+		return sql`${withSql}delete from ${table}${whereSql}${returningSql}`;
 	}
 
 	buildUpdateSet(table: MySqlTable, set: UpdateSet): SQL {
-		const setEntries = Object.entries(set);
+		const tableColumns = table[Table.Symbol.Columns];
 
-		const setSize = setEntries.length;
-		return sql.join(
-			setEntries
-				.flatMap(([colName, value], i): SQL[] => {
-					const col: MySqlColumn = table[Table.Symbol.Columns][colName]!;
-					const res = sql`${sql.identifier(col.name)} = ${value}`;
-					if (i < setSize - 1) {
-						return [res, sql.raw(', ')];
-					}
-					return [res];
-				}),
+		const columnNames = Object.keys(tableColumns).filter((colName) =>
+			set[colName] !== undefined || tableColumns[colName]?.onUpdateFn !== undefined
 		);
+
+		const setSize = columnNames.length;
+		return sql.join(columnNames.flatMap((colName, i) => {
+			const col = tableColumns[colName]!;
+
+			const value = set[colName] ?? sql.param(col.onUpdateFn!(), col);
+			const res = sql`${sql.identifier(col.name)} = ${value}`;
+
+			if (i < setSize - 1) {
+				return [res, sql.raw(', ')];
+			}
+			return [res];
+		}));
 	}
 
-	buildUpdateQuery({ table, set, where, returning }: MySqlUpdateConfig): SQL {
+	buildUpdateQuery({ table, set, where, returning, withList }: MySqlUpdateConfig): SQL {
+		const withSql = this.buildWithCTE(withList);
+
 		const setSql = this.buildUpdateSet(table, set);
 
 		const returningSql = returning
@@ -116,7 +142,7 @@ export class MySqlDialect {
 
 		const whereSql = where ? sql` where ${where}` : undefined;
 
-		return sql`update ${table} set ${setSql}${whereSql}${returningSql}`;
+		return sql`${withSql}update ${table} set ${setSql}${whereSql}${returningSql}`;
 	}
 
 	/**
@@ -170,7 +196,7 @@ export class MySqlDialect {
 						chunk.push(field);
 					}
 				} else if (is(field, Subquery)) {
-					const entries = Object.entries(field[SubqueryConfig].selection) as [string, SQL.Aliased | Column | SQL][];
+					const entries = Object.entries(field._.selectedFields) as [string, SQL.Aliased | Column | SQL][];
 
 					if (entries.length === 1) {
 						const entry = entries[0]![1];
@@ -182,7 +208,7 @@ export class MySqlDialect {
 							: entry.sql.decoder;
 
 						if (fieldDecoder) {
-							field[SubqueryConfig].sql.decoder = fieldDecoder;
+							field._.sql.decoder = fieldDecoder;
 						}
 					}
 					chunk.push(field);
@@ -222,7 +248,7 @@ export class MySqlDialect {
 				is(f.field, Column)
 				&& getTableName(f.field.table)
 					!== (is(table, Subquery)
-						? table[SubqueryConfig].alias
+						? table._.alias
 						: is(table, MySqlViewBase)
 						? table[ViewBaseConfig].name
 						: is(table, SQL)
@@ -244,18 +270,7 @@ export class MySqlDialect {
 
 		const isSingleTable = !joins || joins.length === 0;
 
-		let withSql: SQL | undefined;
-		if (withList?.length) {
-			const withSqlChunks = [sql`with `];
-			for (const [i, w] of withList.entries()) {
-				withSqlChunks.push(sql`${sql.identifier(w[SubqueryConfig].alias)} as (${w[SubqueryConfig].sql})`);
-				if (i < withList.length - 1) {
-					withSqlChunks.push(sql`, `);
-				}
-			}
-			withSqlChunks.push(sql` `);
-			withSql = sql.join(withSqlChunks);
-		}
+		const withSql = this.buildWithCTE(withList);
 
 		const distinctSql = distinct ? sql` distinct` : undefined;
 
@@ -430,6 +445,11 @@ export class MySqlDialect {
 						const defaultFnResult = col.defaultFn();
 						const defaultValue = is(defaultFnResult, SQL) ? defaultFnResult : sql.param(defaultFnResult, col);
 						valueList.push(defaultValue);
+						// eslint-disable-next-line unicorn/no-negated-condition
+					} else if (!col.default && col.onUpdateFn !== undefined) {
+						const onUpdateFnResult = col.onUpdateFn();
+						const newValue = is(onUpdateFnResult, SQL) ? onUpdateFnResult : sql.param(onUpdateFnResult, col);
+						valueList.push(newValue);
 					} else {
 						valueList.push(sql`default`);
 					}
